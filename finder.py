@@ -20,6 +20,7 @@ import string
 import pysos
 import re
 import bisect
+import os.path
 
 # small words like "a", "the", etc. are usually associated with so many items that the cost overweights the benefits.
 # for small words, you can as well iterate over all values.
@@ -138,9 +139,22 @@ def filt(obj, word, keys):
         
 class Finder:
     
-    def __init__(self, collection, keys=None):
+    def __init__(self, collection, index_file=None, keys=None):
         self._collection = collection
-        self._index = index(collection, keys)
+        self._keys = keys
+        
+        if index_file:
+            if os.path.exists(index_file):
+                # load it from file
+                self._index = pysos.Dict(index_file)
+            else:
+                # create it
+                self._index = pysos.Dict(index_file)
+                for k,v in index(collection, keys).items():
+                    self._index[k] = v    
+        else:
+            # use an in-memory one
+            self._index = index(collection, keys)    
         self._voc = sorted(self._index.keys())
         
     def words(self, prefix):
@@ -177,4 +191,37 @@ class Finder:
         print("Total searched: %d " % i)
         results.sort(key=lambda s: -s[0])
         return results
-                
+    
+    def update(self, key, val, old):
+        assert val != None or old != None
+        if old == None:
+            # a new value
+            idx = index({key: val}, self._keys)
+            for word, k in idx.items():
+                assert [key] == k
+                if word in self._index:
+                    self._index[word].append(key)
+                else:
+                    self._index[word] = [key]
+                    bisect.insort(self._voc, word)
+        elif val == None:
+            # a deleted value
+            idx = index({key: old}, self._keys)
+            for word, k in idx.items():
+                assert [key] == k
+                assert (word in self._index)
+                self._index[word].remove(key)
+                if not self._index[word]:
+                    del self._index[word]
+                    i = bisect.bisect_left(self._voc, word)
+                    del self._voc[ i ]
+        else:
+            # an updated value
+            #idx_old = index({key: old}, self._keys)
+            #idx_val = index({key: val}, self._keys)
+            # TODO: optimize this quick and dirty trick by comparing the two outputs
+            # delete it first
+            self.update(key, None, old)
+            # add the new one afterwards
+            self.update(key, val, None)
+        

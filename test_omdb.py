@@ -20,20 +20,28 @@ def RAM(obj):
     
 start = time.time()
 
-db = pysos.List('omdb.txt.sos_10k')
+FILE = 'omdb_10k.sos'
+db = pysos.List(FILE)
 
 print("%.2fs: %d items loaded" % (time.time() - start, len(db)))
 
 #cProfile.run('finder = finder.Finder(db)')
 
-finder = finder.Finder(db)
+finder = finder.Finder(db, FILE + '.idx')
 
 print("%.2fs" % (time.time() - start))
 print("%.2fs: %d indexed words" % (time.time() - start, len(finder._voc)) )
-print("%.2fs: RAM: %.2f mb" % (time.time() - start, RAM(finder)) )
+#print("%.2fs: RAM: %.2f mb" % (time.time() - start, RAM(finder)) )
 print("%.2fs" % (time.time() - start))
 
 f = finder
+db.observe(f.update)
+
+db[111] = {'foo': 'testtest'}
+
+res = f.search('testtest')
+print(next(res))
+
 #res = f.find('ali', exact=False, weights={'Title':1})
 res = f.search('alice')
 print(next(res))
