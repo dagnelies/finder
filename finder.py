@@ -21,6 +21,9 @@ import pysos
 import re
 import bisect
 import os.path
+from collections import namedtuple
+
+Hit = namedtuple('Hit', 'key, value, score')
 
 # small words like "a", "the", etc. are usually associated with so many items that the cost overweights the benefits.
 # for small words, you can as well iterate over all values.
@@ -30,6 +33,8 @@ import os.path
 MIN_TOKEN_LENGTH = 3
 # this limit is used in order to avoid giant tokens due to binary/encoded data items
 TOKEN_SIZE_LIMIT = 20
+
+SPLIT_INNER_PUNCTUATION = True
 
 def _walk(obj):
     if not obj:
@@ -51,11 +56,18 @@ def _walk(obj):
     
 def tokenize(val):
     tokens = str(val).lower().split()
-    #tokens = [ t.strip(string.punctuation)[:TOKEN_SIZE_LIMIT] for t in tokens ]
+    tokens = [ t.strip(string.punctuation)[:TOKEN_SIZE_LIMIT] for t in tokens ]
+    if SPLIT_INNER_PUNCTUATION:
+        more = []
+        for t in tokens:
+            ts = re.split('\W+', t)
+            if len(ts) > 1:
+                more += ts
+        tokens += more
     # split big tokens according to punctuation?
     # support non-latin languages punctuation?
     # chinese/japanese word splitting?
-    map( lambda t: t.strip(string.punctuation)[:TOKEN_SIZE_LIMIT], tokens )
+    #map( lambda t: t.strip(string.punctuation)[:TOKEN_SIZE_LIMIT], tokens )
     return tokens
 
 
@@ -108,28 +120,42 @@ def index(collection, keys=None):
     return indexes
 
 
-def score(obj, word, weights, exact=True):
+def score(obj, word, weights={}, exact=True):
     s = 0
-    for (key, weight) in weights.items():
-        if not weight:
-            continue
-        if isinstance(obj, list):
-            key = int(key)
-            if key >= len(obj):
-                continue
-        else:
-            if key not in obj:
-                continue
-        val = obj[key]
-        tokens = tokenize(val)
+    
+    if not weights:
+        tokens = []
+        for val in _walk(obj):
+            tokens += tokenize(val)
         if exact:
-            s += weight * tokens.count(word) / len(tokens)
+            s = tokens.count(word) / len(tokens)
         else:
             n = 0
             for t in tokens:
                 if t.startswith(word):
                     n += 1
-            s += weight * n / len(tokens)
+            s = n / len(tokens)
+    else:  
+        for (key, weight) in weights.items():
+            if not weight:
+                continue
+            if isinstance(obj, list):
+                key = int(key)
+                if key >= len(obj):
+                    continue
+            else:
+                if key not in obj:
+                    continue
+            val = obj[key]
+            tokens = tokenize(val)
+            if exact:
+                s += weight * tokens.count(word) / len(tokens)
+            else:
+                n = 0
+                for t in tokens:
+                    if t.startswith(word):
+                        n += 1
+                s += weight * n / len(tokens)
             
     return s
 
@@ -163,33 +189,38 @@ class Finder:
         j = bisect.bisect_right( self._voc, prefix + 'z' )
         return self._voc[i:j]
     
-        
-    def search(self, word, exact=True):
+    
+    def searchKeys(self, word, exact=True):
         word = tokenize(word)[0]
         if exact:
             if word not in self._index:
                 return
             for key in self._index[word]:
-                yield self._collection[key]
+                yield key
         else:
             for w in self.words(word):
                 for key in self._index[w]:
-                    yield self._collection[key]
+                    yield key
+        
+    def searchValues(self, word, exact=True):
+        for key in self.searchKeys(word, exact):
+            yield self._collection[key]
     
   
     def find(self, word, exact=True, weights={}):
         word = tokenize(word)[0]
         results = []
         i = 0
-        for hit in self.search(word, exact):
-            i += 1
-            if i % 1000 == 0:
-                print(i)
-            s = score(hit, word, weights, exact)
-            if s > 0:
-                results.append((s, hit))
+        for key in self.searchKeys(word, exact):
+            val = self._collection[key]
+            s = score(val, word, weights, exact)
+            assert weights or s > 0
+            if s <= 0:
+                continue
+            
+            results.append( Hit(key, val, s) )
         print("Total searched: %d " % i)
-        results.sort(key=lambda s: -s[0])
+        results.sort(key=lambda hit: -hit.score)
         return results
     
     def update(self, key, val, old):
