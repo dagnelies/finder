@@ -12,6 +12,12 @@ onlyin=[keys] -> returns only the items where the term/prefix is contained in on
 
 weights={key1:weight1,...} -> retrieves all items matching, score them and sort them. 
 It's slower since all items have to be retrieved and sorted first.
+
+
+Three find/search methods:
+- find the "exact" content (case sensitive)
+- find the "token" inside (case insensitive)
+- find the "prefix" inside (case insensitive)
 '''
 
 import sys
@@ -21,6 +27,7 @@ import pysos
 import re
 import bisect
 import os.path
+import heapq
 from collections import namedtuple
 
 Hit = namedtuple('Hit', 'key, value, score')
@@ -34,7 +41,6 @@ MIN_TOKEN_LENGTH = 3
 # this limit is used in order to avoid giant tokens due to binary/encoded data items
 TOKEN_SIZE_LIMIT = 20
 
-SPLIT_INNER_PUNCTUATION = True
 
 def _walk(obj):
     if not obj:
@@ -51,24 +57,14 @@ def _walk(obj):
         yield obj
         
 
-
-    
-    
+# We split whitespaces including bordering punctuation, as well as apostrophes
+# The reason not to split punctuation as a whole is to keep things like 2016-07-11, 14:02:11, 123.456 or CODED-ID/123.xyz as a whole token
+_splitter = re.compile("\W*\s+\W*|'|’")
 def tokenize(val):
-    tokens = str(val).lower().split()
-    tokens = [ t.strip(string.punctuation)[:TOKEN_SIZE_LIMIT] for t in tokens ]
-    if SPLIT_INNER_PUNCTUATION:
-        more = []
-        for t in tokens:
-            ts = re.split('\W+', t)
-            if len(ts) > 1:
-                more += ts
-        tokens += more
-    # split big tokens according to punctuation?
-    # support non-latin languages punctuation?
-    # chinese/japanese word splitting?
-    #map( lambda t: t.strip(string.punctuation)[:TOKEN_SIZE_LIMIT], tokens )
+    tokens = _splitter.split(str(val).strip().lower())
+    tokens = [ t[:TOKEN_SIZE_LIMIT] for t in tokens ] # avoid giant tokens
     return tokens
+
 
 
 def iterate(obj):
@@ -172,9 +168,11 @@ class Finder:
         if index_file:
             if os.path.exists(index_file):
                 # load it from file
+                print('loading it')
                 self._index = pysos.Dict(index_file)
             else:
                 # create it
+                print('creating it')
                 self._index = pysos.Dict(index_file)
                 for k,v in index(collection, keys).items():
                     self._index[k] = v    
@@ -206,8 +204,24 @@ class Finder:
         for key in self.searchKeys(word, exact):
             yield self._collection[key]
     
-  
-    def find(self, word, exact=True, weights={}):
+    def searchWeighted(self, word, exact=True, weights={}):
+        for key in self.searchKeys(word, exact):
+            val = self._collection[key]
+            s = score(val, word, weights, exact)
+            assert weights or s > 0
+            if s > 0:
+                yield Hit(key, val, s)
+    
+    def search(self, word, exact=True, weights={}, limit=100):
+        word = tokenize(word)[0]
+        if limit > 0:
+            results = heapq.nlargest(limit, self.searchWeighted(word, exact, weights), key=lambda hit: hit.score)
+        else:
+            results = sorted(self.searchWeighted(word, exact, weights), key=lambda hit: hit.score)
+        return results
+        
+    
+    def search_old(self, word, exact=True, weights={}, limit=100):
         word = tokenize(word)[0]
         results = []
         i = 0
@@ -219,10 +233,11 @@ class Finder:
                 continue
             
             results.append( Hit(key, val, s) )
-        print("Total searched: %d " % i)
+        print("Total searched: %d " % len(results))
         results.sort(key=lambda hit: -hit.score)
-        return results
-    
+        print('%d hits sorted' % len(results))
+        return results[:limit]
+        
     def update(self, key, val, old):
         assert val != None or old != None
         if old == None:
@@ -256,3 +271,106 @@ class Finder:
             # add the new one afterwards
             self.update(key, val, None)
         
+    def find2(self, where, negate=False):
+        tokens = _tokenize(where)
+        pred = _buildAnd(tokens)
+        if not negate:
+            return pred
+        else:
+            return lambda obj: not pred(obj)
+        
+        
+_operators = set(['<','<=','==','!=','~=','>=','>'])
+
+
+
+
+def _tokenize(where):
+    tokens = []
+    s = 0
+    e = 0
+    while s < len(where):
+        if where[s] == ',':
+            e += 1
+        elif where[s] == '"':
+            e += 1
+            while where[e] != '"': 
+                e += 1
+                if e == len(where):
+                    raise Exception("Unterminated string: " + where[s:])
+            e += 1
+        elif where[s] == "'":
+            e += 1
+            while where[e] != "'": 
+                e += 1
+                if e == len(where):
+                    raise Exception("Unterminated string: " + where[s:])
+            e += 1
+        elif where[s] in '<>=!~':
+            if where[s+1] == '=':
+                e += 2
+            else:
+                e += 1
+        elif where[s] == '|':
+            if where[s+1] != '|':
+                raise Exception("Double || should be used for 'or'")
+            else:
+                e += 2
+        else:
+            while e < len(where) and where[e] not in '<>=!~|"':
+                e += 1
+
+        tok = where[s:e]
+        tokens.append( tok )
+        s = e
+            
+
+
+        
+def _buildAnd(tokens):
+    if ';' not in tokens:
+        return _buildOr(tokens)
+ 
+    conditions = []
+    while ';' in tokens:
+        i = tokens.index(';')
+        conditions.append( tokens[:i] )
+        tokens = tokens[i+1:]
+         
+    predicates = map(_buildOr, conditions)
+
+    def doAnd(obj, predicates):
+        for p in predicates:
+            if p(obj) == False:
+                return False
+        return True
+    return doAnd
+
+def _buildOr(tokens):
+    if '||' not in tokens:
+        return _buildComp(tokens)
+ 
+    conditions = []
+    while '||' in tokens:
+        i = tokens.index('||')
+        conditions.append( tokens[:i] )
+        tokens = tokens[i+1:]
+         
+    predicates = map(_buildComp, conditions)
+
+    def doOr(obj):
+        for p in predicates:
+            if p(obj) == True:
+                return True
+        return False
+    return doOr
+    
+def _buildComp(tokens):
+    if len(tokens) < 3 or len(tokens) % 2 != 1:
+        raise Exception("Invalid 'where' clause: " + "".join(tokens))
+
+    (left, op, right) = tokens[0:3]
+    
+    if left[0] == '"' or left[0] == "'":
+        pass
+    
