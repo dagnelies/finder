@@ -1,3 +1,4 @@
+ # -*- coding: utf8 -*-
 '''
 This module takes a collection as input, and builds a "reversed index":
 word -> items
@@ -15,13 +16,17 @@ It's slower since all items have to be retrieved and sorted first.
 
 
 Three find/search methods:
-- find the "exact" content (case sensitive)
-- find the "token" inside (case insensitive)
-- find the "prefix" inside (case insensitive)
+- find the "exact" content
+- find the "token" inside (default)
+- find the "prefix" inside
+- case sensitive / insensitive (default)
 '''
 
 import sys
-sys.path.append('../pysos')
+if sys.version_info < (3, 0):
+    print('Sorry, requires Python 3.x')
+    sys.exit(1)
+    
 import string
 import pysos
 import re
@@ -79,6 +84,7 @@ def index(collection, keys=None):
     '''Returns an index: word -> ["key1","key2",...]'''
 
     indexes = {}
+    
     i = 0
     for key in iterate(collection):
         i += 1
@@ -188,7 +194,7 @@ class Finder:
         return self._voc[i:j]
     
     
-    def searchKeys(self, word, exact=True):
+    def search_keys(self, word, exact=True):
         word = tokenize(word)[0]
         if exact:
             if word not in self._index:
@@ -200,44 +206,27 @@ class Finder:
                 for key in self._index[w]:
                     yield key
         
-    def searchValues(self, word, exact=True):
-        for key in self.searchKeys(word, exact):
+    def search_values(self, word, exact=True):
+        for key in self.search_keys(word, exact):
             yield self._collection[key]
     
-    def searchWeighted(self, word, exact=True, weights={}):
-        for key in self.searchKeys(word, exact):
+    def search_weighted(self, word, exact=True, weights={}):
+        for key in self.search_keys(word, exact):
             val = self._collection[key]
             s = score(val, word, weights, exact)
             assert weights or s > 0
             if s > 0:
                 yield Hit(key, val, s)
     
-    def search(self, word, exact=True, weights={}, limit=100):
+    def find(self, word, exact=True, weights={}, limit=100):
         word = tokenize(word)[0]
         if limit > 0:
-            results = heapq.nlargest(limit, self.searchWeighted(word, exact, weights), key=lambda hit: hit.score)
+            results = heapq.nlargest(limit, self.search_weighted(word, exact, weights), key=lambda hit: hit.score)
         else:
-            results = sorted(self.searchWeighted(word, exact, weights), key=lambda hit: hit.score)
+            results = sorted(self.search_weighted(word, exact, weights), key=lambda hit: -hit.score)
         return results
         
     
-    def search_old(self, word, exact=True, weights={}, limit=100):
-        word = tokenize(word)[0]
-        results = []
-        i = 0
-        for key in self.searchKeys(word, exact):
-            val = self._collection[key]
-            s = score(val, word, weights, exact)
-            assert weights or s > 0
-            if s <= 0:
-                continue
-            
-            results.append( Hit(key, val, s) )
-        print("Total searched: %d " % len(results))
-        results.sort(key=lambda hit: -hit.score)
-        print('%d hits sorted' % len(results))
-        return results[:limit]
-        
     def update(self, key, val, old):
         assert val != None or old != None
         if old == None:
@@ -270,14 +259,16 @@ class Finder:
             self.update(key, None, old)
             # add the new one afterwards
             self.update(key, val, None)
-        
-    def find2(self, where, negate=False):
-        tokens = _tokenize(where)
-        pred = _buildAnd(tokens)
-        if not negate:
-            return pred
-        else:
-            return lambda obj: not pred(obj)
+
+
+
+def predicate(self, where, negate=False):
+    tokens = _tokenize(where)
+    pred = _buildAnd(tokens)
+    if not negate:
+        return pred
+    else:
+        return lambda obj: not pred(obj)
         
         
 _operators = set(['<','<=','==','!=','~=','>=','>'])
@@ -328,12 +319,12 @@ def _tokenize(where):
 
         
 def _buildAnd(tokens):
-    if ';' not in tokens:
+    if ',' not in tokens:
         return _buildOr(tokens)
  
     conditions = []
-    while ';' in tokens:
-        i = tokens.index(';')
+    while ',' in tokens:
+        i = tokens.index(',')
         conditions.append( tokens[:i] )
         tokens = tokens[i+1:]
          

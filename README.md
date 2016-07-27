@@ -25,3 +25,11 @@ assert f.find('wonder', exact=False) == [Hit(key=0, value="Alice's Adventures in
 # you can also search for numbers
 print(f.find('1234.5678'))
 ```
+
+
+Impl. notes
+-----------
+
+How to implement the where clause?
+
+For all ==
