@@ -52,12 +52,10 @@ def _walk(obj):
         return
     if isinstance(obj,dict):
         for child in obj.values():
-            for leaf in _walk(child):
-                yield leaf
+            yield from _walk(child)
     elif isinstance(obj,list):
         for child in obj:
-            for leaf in _walk(child):
-                yield leaf
+            yield from _walk(child)
     else:
         yield obj
         
@@ -84,15 +82,13 @@ def index(collection, keys=None):
     '''Returns an index: word -> ["key1","key2",...]'''
 
     indexes = {}
-    
-    i = 0
-    for key in iterate(collection):
-        i += 1
+
+    for i, key in enumerate(iterate(collection), start=1):
         if i % 1000 == 0:
             print('%12d' % i)
-            
+
         item = collection[key]
-        
+
         unique = set()
         for val in _walk(item):
             tokens = tokenize(val)
@@ -100,7 +96,7 @@ def index(collection, keys=None):
                 if len(t) < MIN_TOKEN_LENGTH:
                     continue
                 unique.add(t)
-        
+
         for u in unique:
             if u in indexes:
                 indexes[u].append(key)
@@ -112,32 +108,20 @@ def index(collection, keys=None):
                 #        print('Too big: ' + t)
             else:
                 indexes[u] = [key]
-    
+
     #import pysos.pysos as pysos
     #d = pysos.Dict('temp.index.sos')
     #for k,v in indexes.items():
     #    d[k] = v
     #d.close()
-    
+
     return indexes
 
 
 def score(obj, word, weights={}, exact=True):
     s = 0
-    
-    if not weights:
-        tokens = []
-        for val in _walk(obj):
-            tokens += tokenize(val)
-        if exact:
-            s = tokens.count(word) / len(tokens)
-        else:
-            n = 0
-            for t in tokens:
-                if t.startswith(word):
-                    n += 1
-            s = n / len(tokens)
-    else:  
+
+    if weights:  
         for (key, weight) in weights.items():
             if not weight:
                 continue
@@ -153,12 +137,18 @@ def score(obj, word, weights={}, exact=True):
             if exact:
                 s += weight * tokens.count(word) / len(tokens)
             else:
-                n = 0
-                for t in tokens:
-                    if t.startswith(word):
-                        n += 1
+                n = sum(bool(t.startswith(word)) for t in tokens)
                 s += weight * n / len(tokens)
-            
+
+    else:
+        tokens = []
+        for val in _walk(obj):
+            tokens += tokenize(val)
+        if exact:
+            s = tokens.count(word) / len(tokens)
+        else:
+            n = sum(bool(t.startswith(word)) for t in tokens)
+            s = n / len(tokens)
     return s
 
 def filt(obj, word, keys):
@@ -199,12 +189,10 @@ class Finder:
         if exact:
             if word not in self._index:
                 return
-            for key in self._index[word]:
-                yield key
+            yield from self._index[word]
         else:
             for w in self.words(word):
-                for key in self._index[w]:
-                    yield key
+                yield from self._index[w]
         
     def search_values(self, word, exact=True):
         for key in self.search_keys(word, exact):
@@ -221,15 +209,22 @@ class Finder:
     def find(self, word, exact=True, weights={}, limit=100):
         word = tokenize(word)[0]
         if limit > 0:
-            results = heapq.nlargest(limit, self.search_weighted(word, exact, weights), key=lambda hit: hit.score)
+            return heapq.nlargest(
+                limit,
+                self.search_weighted(word, exact, weights),
+                key=lambda hit: hit.score,
+            )
+
         else:
-            results = sorted(self.search_weighted(word, exact, weights), key=lambda hit: -hit.score)
-        return results
+            return sorted(
+                self.search_weighted(word, exact, weights),
+                key=lambda hit: -hit.score,
+            )
         
     
     def update(self, key, val, old):
         assert val != None or old != None
-        if old == None:
+        if old is None:
             # a new value
             idx = index({key: val}, self._keys)
             for word, k in idx.items():
@@ -239,7 +234,7 @@ class Finder:
                 else:
                     self._index[word] = [key]
                     bisect.insort(self._voc, word)
-        elif val == None:
+        elif val is None:
             # a deleted value
             idx = index({key: old}, self._keys)
             for word, k in idx.items():
@@ -298,10 +293,7 @@ def _tokenize(where):
                     raise Exception("Unterminated string: " + where[s:])
             e += 1
         elif where[s] in '<>=!~':
-            if where[s+1] == '=':
-                e += 2
-            else:
-                e += 1
+            e += 2 if where[s+1] == '=' else 1
         elif where[s] == '|':
             if where[s+1] != '|':
                 raise Exception("Double || should be used for 'or'")
@@ -331,10 +323,7 @@ def _buildAnd(tokens):
     predicates = map(_buildOr, conditions)
 
     def doAnd(obj, predicates):
-        for p in predicates:
-            if p(obj) == False:
-                return False
-        return True
+        return all(p(obj) != False for p in predicates)
     return doAnd
 
 def _buildOr(tokens):
@@ -350,10 +339,7 @@ def _buildOr(tokens):
     predicates = map(_buildComp, conditions)
 
     def doOr(obj):
-        for p in predicates:
-            if p(obj) == True:
-                return True
-        return False
+        return any(p(obj) == True for p in predicates)
     return doOr
     
 def _buildComp(tokens):
@@ -361,7 +347,4 @@ def _buildComp(tokens):
         raise Exception("Invalid 'where' clause: " + "".join(tokens))
 
     (left, op, right) = tokens[0:3]
-    
-    if left[0] == '"' or left[0] == "'":
-        pass
     
